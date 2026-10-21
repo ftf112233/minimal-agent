@@ -1,0 +1,5 @@
+# 运行依赖：仅 OpenAI 兼容 SDK（DeepSeek 官方 API 走 OpenAI 协议）
+openai>=1.30.0
+python-dotenv>=1.0.0
+
+# 测试无第三方依赖：基于标准库 unittest，python -m unittest discover -s tests -v 即可运行
