@@ -128,6 +128,8 @@ class AgentRuntime:
                 )
                 logger.info("session=%s 第 %d 步调用工具 %s -> %s",
                             session.session_id, step, parsed.action, observation[:80])
+                # 超长结果先截断再入 history：工具返回几十 KB 文本时不能把 context 撑爆
+                observation = self.context.truncate_observation(observation)
                 # Step 4 的"继续"分支：把结果回灌，进入下一轮循环
                 session.add_observation(observation)
                 continue

@@ -10,6 +10,8 @@
 from __future__ import annotations
 
 import logging
+import os
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -47,6 +49,11 @@ class Tool:
     description: str
     parameters: dict  # JSON Schema（type=object，含 properties/required）
     handler: ToolHandler
+    timeout: float | None = None  # 单工具超时覆盖值；None 表示用注册表默认值
+
+
+# 默认超时（秒）。环境变量可覆盖，方便测试里调小、线上调大。
+DEFAULT_TOOL_TIMEOUT = float(os.environ.get("TOOL_TIMEOUT", "10.0"))
 
 
 @dataclass
@@ -54,6 +61,11 @@ class ToolRegistry:
     """工具登记表。用 dict 保持 O(1) 查找；注册顺序即 prompt 中的展示顺序。"""
 
     _tools: dict[str, Tool] = field(default_factory=dict)
+    default_timeout: float = DEFAULT_TOOL_TIMEOUT
+    # 工具在线程池里执行，才能在 Windows 上也支持超时中断（signal.alarm 仅 Unix 可用）
+    _executor: ThreadPoolExecutor = field(
+        default_factory=lambda: ThreadPoolExecutor(max_workers=8, thread_name_prefix="tool")
+    )
 
     def register(self, tool: Tool) -> None:
         if tool.name in self._tools:
@@ -92,8 +104,21 @@ class ToolRegistry:
         if missing:
             return f"Error: 工具 '{name}' 缺少必填参数: {', '.join(missing)}"
 
+        timeout = tool.timeout if tool.timeout is not None else self.default_timeout
+
+        # 超时控制：把 handler 丢进线程池，主线程只等 timeout 秒。
+        # 为什么用线程池而不是 signal.alarm：signal 模块在 Windows 上没有 SIGALRM，
+        # 而本项目要跨平台可跑。代价见下面的注释——超时后无法真正杀死线程。
+        future = self._executor.submit(tool.handler, args, ctx)
         try:
-            result = tool.handler(args, ctx)
+            result = future.result(timeout=timeout)
+        except FuturesTimeoutError:
+            # 已知取舍：Python 线程无法被强制杀掉，卡住的 handler 会在后台继续跑
+            # （线程池有上限 8，极端情况下并发打满会排队）。真正的强隔离要换子进程，
+            # 对笔试题属于过度设计——这里明确了边界并写进注释。
+            logger.warning("工具 %s 执行超时（>%.1fs）", name, timeout)
+            return (f"Error: 工具 '{name}' 执行超时（>{timeout:.1f}s），已放弃本次调用。"
+                    "请改用其他工具，或简化参数后重试。")
         except ToolError as e:
             # 业务错误：原样反馈给模型，信息最有价值
             return f"Error: {e}"

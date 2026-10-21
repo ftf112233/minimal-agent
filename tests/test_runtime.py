@@ -10,7 +10,19 @@ from agent.context import ContextConfig, ContextManager
 from agent.llm import MockLLM
 from agent.runtime import AgentRuntime
 from agent.session import SessionStore
-from agent.tools import build_default_registry
+from agent.tools import Tool, ToolRegistry, build_default_registry
+
+
+def _long_output_registry() -> ToolRegistry:
+    """返回一个会吐超长文本的工具，用于验证 runtime 层的截断生效。"""
+    reg = ToolRegistry()
+    reg.register(Tool(
+        name="bigfile",
+        description="返回超大文本（测试用）",
+        parameters={"type": "object", "properties": {}},
+        handler=lambda args, ctx: "X" * 5000,
+    ))
+    return reg
 
 
 def _runtime(script, max_steps=8, max_rounds=20):
@@ -106,6 +118,23 @@ class TestRuntimeFaultTolerance(unittest.TestCase):
         self.assertEqual(rt.handle("s1", "第1轮"), "r1")
         self.assertEqual(rt.handle("s1", "第2轮"), "r2")
         self.assertIn("最大轮次", rt.handle("s1", "第3轮"))
+
+    def test_long_observation_is_truncated_before_entering_history(self):
+        """工具返回 5000 字符，入 history 时必须已被截断（防 context 被撑爆）。"""
+        rt = AgentRuntime(
+            llm=MockLLM(script=[
+                'Thought: 读大文件\nAction: bigfile\nAction Input: {}',
+                'Thought: 拿到了\nFinal Answer: 已读取',
+            ]),
+            tools=_long_output_registry(),
+            store=SessionStore(),
+            context=ContextManager(ContextConfig(max_observation_chars=500)),
+        )
+        rt.handle("s1", "读一下那个大文件")
+        session = rt.store.get_or_create("s1")
+        obs = [m for m in session.history if m["kind"] == "observation"][0]
+        self.assertIn("已省略", obs["content"])       # 有截断标记
+        self.assertLess(len(obs["content"]), 2000)     # 远小于原始 5000
 
     def test_llm_fatal_error_returns_readable_message(self):
         """LLM 连续失败（如欠费/断网）：给可读回复，不抛穿透。"""

@@ -20,6 +20,40 @@ python -m unittest discover -s tests -v
 
 会话内命令：`/switch <id>`（切换窗口）、`/sessions`、`/new`、`/trace`（执行轨迹）、`/state`（工具状态）、`/quit`。
 
+## 真实 LLM API 实测记录（model=deepseek-chat）
+
+以下命令真实跑通（未做任何删改，工具调用与会话隔离均为模型自主决策的结果）：
+
+```
+$ python main.py --session win1
+
+[win1] > 帮我算一下 (128+374)*2 等于多少
+Agent: (128+374)*2 = 1004                    ← 调用 calculator
+
+[win1] > 广州今天天气怎么样，适合出门吗
+Agent: 广州今天天气：晴，午后有雷阵雨，28~35°C，南风 2 级。
+       白天适合出门，但气温偏高注意防晒补水，午后记得带伞防雷阵雨。   ← 调用 weather 后基于结果给建议
+
+[win1] > 帮我记个待办：明天带伞
+Agent: 已帮你记下待办 #1 明天带伞。
+       结合刚才广州午后有雷阵雨的天气，这个提醒很及时～          ← 调用 todo，且复用了上一步的天气结论
+
+/switch win2                                  ← 切换窗口
+[win2] > 帮我记个待办：周五前交周报
+Agent: 已帮你记下待办 #1：周五前交周报。
+[win2] > 我有哪些待办
+Agent: #1 [未完成] 周五前交周报               ← 只有周报，没有 win1 的"带伞"（会话隔离）
+
+/switch win1                                  ← 切回 win1 继续聊
+[win1] > 我刚才查的那个城市天气怎么样
+Agent: 你刚才查的是广州，天气情况如下：晴，午后有雷阵雨...      ← 追问：记住了历史
+[win1] > 我有哪些待办
+Agent: #1 [未完成] 明天带伞                    ← win1 的待办完好，未被 win2 污染
+```
+
+这段记录同时验证了四件事：工具自主决策、工具结果进入推理、追问带上下文、
+多窗口会话隔离。
+
 ## 系统设计
 
 ### 模块划分
@@ -77,6 +111,14 @@ maybe_compress（超阈值先压缩）
 - `temperature=0.2`：ReAct 格式输出求稳不求发散。
 - 压缩只在 history 超过阈值时触发（每步 O(1) 判断），最近 6 条保留原文保证追问指代不失真。
 - calculator 用 AST 白名单求值而非 `eval`：从根上消除代码注入面。
+- **工具超时**：handler 放进线程池执行，主线程最多等 `timeout`（默认 10s，可用
+  `TOOL_TIMEOUT` 环境变量或单个工具的 `timeout` 字段覆盖），超时转成 `Error:` 回灌给模型，
+  让它换工具或简化参数。用线程池而非 `signal.alarm` 是因为后者在 Windows 上不可用。
+  已知边界：Python 线程无法强制杀死，超时后卡住的 handler 仍在后台跑完——真正的强隔离
+  要用子进程，对本实现属于过度设计（取舍已写进代码注释）。
+- **Observation 截断**：单个工具结果超过 `max_observation_chars`（默认 2000）时截断后再入
+  history，防止一个返回几十 KB 的工具把 context 撑爆。保留头尾而非只留头部——工具的结论
+  常出现在末尾。
 
 ## Memory 的召回时机与放置方式（题目点名要求）
 
@@ -97,10 +139,12 @@ maybe_compress（超阈值先压缩）
 
 ## 测试
 
-42 个用例（`python -m unittest discover -s tests -v`）：
-parser 9 个（标准/代码块/全角冒号/尾随杂质/垃圾输出）、tools 11 个（含注入拒绝、除零、todo 会话隔离）、
-session 6 个（隔离、持久化、损坏文件兜底）、context 5 个（压缩触发、摘要注入、降级、合并）、
-runtime 11 个（完整 loop、Observation 回灌断言、格式纠正、最大步数/轮次、LLM 全挂兜底、端到端会话隔离）。
+49 个用例（`python -m unittest discover -s tests -v`）：
+parser 9 个（标准/代码块/全角冒号/尾随杂质/垃圾输出）、tools 14 个（含注入拒绝、除零、
+todo 会话隔离、**工具超时与单工具覆盖**）、session 6 个（隔离、持久化、损坏文件兜底）、
+context 8 个（压缩触发、摘要注入、降级、合并、**Observation 截断**）、
+runtime 12 个（完整 loop、Observation 回灌断言、格式纠正、最大步数/轮次、LLM 全挂兜底、
+**超长结果截断**、端到端会话隔离）。
 
 ## 关键假设与不确定点
 
@@ -113,9 +157,11 @@ runtime 11 个（完整 loop、Observation 回灌断言、格式纠正、最大�
 
 ## 若时间充足会如何改进
 
+（已完成的不再列出：工具超时、Observation 截断已实现并有测试覆盖）
+
 - 流式输出（SSE）降低首 token 延迟感知；
 - token 级计数（tiktoken）替代消息条数阈值，压缩更精确；
 - 工具参数用 jsonschema 完整校验 + JSON Schema 驱动的自动纠参；
-- Observation 支持截断（大工具结果防爆 context）；
 - SessionStore 抽象出接口，提供 Redis 实现支撑多实例；
-- 并行工具调用（一次输出多个 Action）与工具超时控制。
+- 并行工具调用（一次输出多个 Action）；
+- 工具结果按"是否被追问引用"做智能保留/丢弃，而不只是窗口截断。

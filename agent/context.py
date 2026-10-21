@@ -24,6 +24,7 @@ class ContextConfig:
     max_rounds: int = 20          # 单 session 最大用户轮次（硬上限）
     recent_window: int = 6        # 压缩后仍原样保留的最近消息条数
     compress_threshold: int = 12  # history 条数超过它才考虑压缩
+    max_observation_chars: int = 2000  # 单个工具结果的字符上限，超出则截断
 
 
 # 摘要压缩用的提示词：要求保留事实与结论，丢掉寒暄和中间推理
@@ -60,6 +61,22 @@ class ContextManager:
             {"role": m["role"], "content": m["content"]} for m in session.history
         )
         return messages
+
+    # -------------------------------------------------- 工具结果截断
+    def truncate_observation(self, text: str) -> str:
+        """超长的工具结果截断后再入 history，防止单个工具把 context 撑爆。
+
+        保留头尾而不是只留头部：工具的结论/错误提示常出现在末尾（比如日志的最后一行），
+        只截尾部会丢掉最有价值的信息。中间省略的部分明确标出字节数，
+        让模型知道"这里被截断了"，而不是误以为结果就这么多。
+        """
+        limit = self.config.max_observation_chars
+        if limit <= 0 or len(text) <= limit:
+            return text
+        head = int(limit * 0.7)
+        tail = limit - head
+        omitted = len(text) - limit
+        return f"{text[:head]}\n...[工具结果过长，已省略 {omitted} 字符]...\n{text[-tail:]}"
 
     # ------------------------------------------------------------ 压缩
     def maybe_compress(self, session: Session, llm) -> bool:

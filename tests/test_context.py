@@ -61,6 +61,25 @@ class TestContextManager(unittest.TestCase):
         self.assertTrue(s.summary)  # 有兜底摘要
         self.assertEqual(len(s.history), 2)
 
+    def test_truncate_observation_short_text_unchanged(self):
+        mgr = ContextManager()
+        self.assertEqual(mgr.truncate_observation("短结果"), "短结果")
+
+    def test_truncate_observation_keeps_head_and_tail(self):
+        """超长结果截断：保留头尾（结论常在末尾），中间标出省略了多少字符。"""
+        mgr = ContextManager(ContextConfig(max_observation_chars=200))
+        text = "H" * 500 + "TAIL_MARKER"
+        result = mgr.truncate_observation(text)
+        # 正文部分不超过 200 字符，外加一行省略标记（长度随省略字数浮动）
+        self.assertLess(len(result) - len("...[工具结果过长，已省略  ]..."), 200 + 20)
+        self.assertIn("已省略", result)
+        self.assertIn("TAIL_MARKER", result)  # 尾部结论保留
+        self.assertTrue(result.startswith("HHH"))  # 头部保留
+
+    def test_truncate_disabled_when_limit_zero(self):
+        mgr = ContextManager(ContextConfig(max_observation_chars=0))
+        self.assertEqual(mgr.truncate_observation("x" * 9999), "x" * 9999)
+
     def test_compress_merges_old_summary(self):
         """多次压缩时，新摘要要和旧摘要合并而不是覆盖丢失。"""
         mgr = ContextManager(ContextConfig(compress_threshold=4, recent_window=2))

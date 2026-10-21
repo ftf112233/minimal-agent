@@ -1,8 +1,9 @@
-"""工具层测试：计算正确性与安全性、注册表错误兜底、todo 的会话隔离。"""
+"""工具层测试：计算正确性与安全性、注册表错误兜底、todo 的会话隔离、超时控制。"""
+import time
 import unittest
 
 from agent.session import Session
-from agent.tools import ToolContext, build_default_registry
+from agent.tools import Tool, ToolContext, ToolRegistry, build_default_registry
 
 
 def _reg():
@@ -88,6 +89,44 @@ class TestTodo(unittest.TestCase):
         ctx = ToolContext(session=Session(session_id="s1"))
         self.assertTrue(reg.execute("todo", {"action": "bad"}, ctx).startswith("Error:"))
         self.assertTrue(reg.execute("todo", {"action": "done", "id": 99}, ctx).startswith("Error:"))
+
+
+class TestToolTimeout(unittest.TestCase):
+    """超时控制：慢工具不能拖死整个 loop，超时转成 Error 回灌给模型。"""
+
+    @staticmethod
+    def _slow_registry(timeout: float, sleep_seconds: float = 1.0) -> ToolRegistry:
+        reg = ToolRegistry(default_timeout=timeout)
+        reg.register(Tool(
+            name="slow",
+            description="慢工具（测试用）",
+            parameters={"type": "object", "properties": {}},
+            handler=lambda args, ctx: (time.sleep(sleep_seconds), "睡醒了")[1],
+        ))
+        return reg
+
+    def test_timeout_returns_error_observation(self):
+        reg = self._slow_registry(timeout=0.1, sleep_seconds=2.0)
+        result = reg.execute("slow", {}, ToolContext())
+        self.assertIn("超时", result)
+        self.assertTrue(result.startswith("Error:"))
+
+    def test_fast_tool_not_affected(self):
+        """正常执行的工具不受超时机制影响。"""
+        reg = self._slow_registry(timeout=5.0, sleep_seconds=0.01)
+        self.assertEqual(reg.execute("slow", {}, ToolContext()), "睡醒了")
+
+    def test_per_tool_timeout_overrides_default(self):
+        """单个工具可以用自己的 timeout 覆盖注册表默认值。"""
+        reg = ToolRegistry(default_timeout=5.0)
+        reg.register(Tool(
+            name="urgent",
+            description="要求快速返回的工具",
+            parameters={"type": "object", "properties": {}},
+            handler=lambda args, ctx: (time.sleep(2.0), "完成")[1],
+            timeout=0.1,  # 覆盖默认的 5s
+        ))
+        self.assertIn("超时", reg.execute("urgent", {}, ToolContext()))
 
 
 if __name__ == "__main__":
