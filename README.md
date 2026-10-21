@@ -154,14 +154,3 @@ runtime 12 个（完整 loop、Observation 回灌断言、格式纠正、最大�
 2. **语言题目未指定**：选 Python——Agent Runtime 自研最直观、依赖最少。
 3. search / weather 是 mock（题目允许），calculator / todo 是真实实现。
 4. Session 持久化用 JSON 文件而非 SQLite/Redis：演示"可恢复"足够，少依赖。
-
-## 若时间充足会如何改进
-
-（已完成的不再列出：工具超时、Observation 截断已实现并有测试覆盖）
-
-- 流式输出（SSE）降低首 token 延迟感知；
-- token 级计数（tiktoken）替代消息条数阈值，压缩更精确；
-- 工具参数用 jsonschema 完整校验 + JSON Schema 驱动的自动纠参；
-- SessionStore 抽象出接口，提供 Redis 实现支撑多实例；
-- 并行工具调用（一次输出多个 Action）；
-- 工具结果按"是否被追问引用"做智能保留/丢弃，而不只是窗口截断。
