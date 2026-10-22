@@ -4,6 +4,11 @@
 唯一的第三方运行依赖是 `openai` SDK——它只是 DeepSeek API（OpenAI 兼容协议）的 HTTP 封装，
 不参与任何 Agent 逻辑。
 
+**本仓库包含**：
+- Vibe coding 题实现与测试（本 README 含运行方式、系统设计、memory 召回时机与放置方式、真实 API 实测记录）
+- [docs/ai-prompt-log.md](docs/ai-prompt-log.md) —— AI Prompt 与问题解决记录
+- [docs/architecture-q4-idempotency.md](docs/architecture-q4-idempotency.md) —— 架构设计题（第 4 题：Agent 的幂等性与重试）
+
 ## 运行方式
 
 ```bash
